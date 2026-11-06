@@ -219,6 +219,113 @@ def show_curve_change_summary(curve: pd.DataFrame, days: int, key: str):
                      use_container_width=True, hide_index=True)
 
 
+
+def render_yield_history(dataset, asof, key_prefix: str, market_label: str):
+    """Gráfico histórico aislado: no altera el pivot, los motores ni otros módulos."""
+    st.subheader(f"Histórico de rendimientos · {market_label}")
+    st.caption("Compara varias emisiones sobre el mismo eje. Medias móviles y Bollinger se calculan sobre observaciones disponibles, no sobre días naturales; no se interpolan cotizaciones faltantes.")
+
+    history = dataset.pivot.copy()
+    history.index = pd.to_datetime(history.index, errors="coerce")
+    history = history.loc[history.index.notna() & (history.index <= pd.Timestamp(asof))]
+    history = history.sort_index()
+    history = history.loc[:, ~history.columns.duplicated()]
+    history.columns = history.columns.map(str)
+    history = history.loc[:, history.notna().any(axis=0)]
+    if history.empty:
+        st.warning("No hay cotizaciones históricas disponibles hasta la fecha seleccionada.")
+        return
+
+    available = history.columns.tolist()
+    active = history.iloc[-1].dropna().index.tolist()
+    suggested = active[:min(3, len(active))] or available[:min(3, len(available))]
+    chosen = st.multiselect(
+        "Selecciona las emisiones para comparar", available, default=suggested,
+        key=f"{key_prefix}_hist_emissions",
+    )
+    if not chosen:
+        st.info("Selecciona una o más emisiones para mostrar su evolución.")
+        return
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        horizon = st.selectbox("Ventana histórica", ["Toda la historia", "3 meses", "6 meses", "1 año", "2 años", "3 años"],
+                               index=3, key=f"{key_prefix}_hist_horizon")
+    with c2:
+        overlays = st.multiselect("Indicadores técnicos", ["Media móvil 14", "Media móvil 60", "Media móvil 200", "Bollinger ±2σ"],
+                                  default=["Media móvil 14", "Media móvil 60", "Media móvil 200", "Bollinger ±2σ"],
+                                  key=f"{key_prefix}_hist_indicators")
+    with c3:
+        indicator_series = st.selectbox("Indicadores sobre la emisión", chosen, key=f"{key_prefix}_hist_focus")
+
+    boll_window = st.selectbox("Ventana Bollinger (observaciones)", [14, 20, 30, 60],
+                               index=1, key=f"{key_prefix}_hist_boll_window") if "Bollinger ±2σ" in overlays else 20
+
+    # Los indicadores se estiman con historia completa; el filtro de fechas solo limita la visualización.
+    data = history[chosen].apply(pd.to_numeric, errors="coerce")
+    focus = data[indicator_series].dropna()
+    moving = {period: focus.rolling(period, min_periods=period).mean() for period in (14, 60, 200)}
+    middle = focus.rolling(boll_window, min_periods=boll_window).mean()
+    sigma = focus.rolling(boll_window, min_periods=boll_window).std(ddof=0)
+    upper, lower = middle + 2 * sigma, middle - 2 * sigma
+    periods = {"3 meses": 3, "6 meses": 6, "1 año": 12, "2 años": 24, "3 años": 36}
+    start = data.index.min() if horizon == "Toda la historia" else data.index.max() - pd.DateOffset(months=periods[horizon])
+    visible = data.loc[data.index >= start]
+
+    fig = go.Figure()
+    palette = ["#087d81", "#355e96", "#d97706", "#9c6db8", "#d05b62", "#168b61", "#754c9e", "#1c869f"]
+    for i, sym in enumerate(chosen):
+        part = visible[sym].dropna()
+        fig.add_trace(go.Scatter(x=part.index, y=part, mode="lines", name=sym,
+                                 line=dict(color=palette[i % len(palette)], width=2.4 if sym == indicator_series else 1.8),
+                                 hovertemplate=f"{sym}<br>%{{x|%d-%m-%Y}}<br>Tasa %{{y:.4f}}%<extra></extra>"))
+
+    if "Bollinger ±2σ" in overlays:
+        low = lower.loc[lower.index >= start].dropna()
+        high = upper.loc[upper.index >= start].dropna()
+        if not low.empty and not high.empty:
+            fig.add_trace(go.Scatter(x=high.index, y=high, mode="lines", line=dict(color="#7d8ea8", width=1, dash="dot"),
+                                     name=f"Bollinger superior ({indicator_series})", hovertemplate="Superior %{y:.4f}%<extra></extra>"))
+            fig.add_trace(go.Scatter(x=low.index, y=low, mode="lines", line=dict(color="#7d8ea8", width=1, dash="dot"),
+                                     fill="tonexty", fillcolor="rgba(125,142,168,0.11)",
+                                     name=f"Bollinger inferior ({indicator_series})", hovertemplate="Inferior %{y:.4f}%<extra></extra>"))
+        else:
+            st.caption(f"Bollinger necesita al menos {boll_window} cotizaciones válidas de {indicator_series}.")
+
+    for period, color in [(14, "#e8a041"), (60, "#9c6db8"), (200, "#202f46")]:
+        if f"Media móvil {period}" not in overlays:
+            continue
+        line = moving[period].loc[moving[period].index >= start].dropna()
+        if line.empty:
+            st.caption(f"Media móvil {period}: faltan cotizaciones suficientes de {indicator_series}.")
+            continue
+        fig.add_trace(go.Scatter(x=line.index, y=line, mode="lines", name=f"MM{period} · {indicator_series}",
+                                 line=dict(color=color, width=2, dash="dash"),
+                                 hovertemplate=f"MM{period}: %{{y:.4f}}%<extra></extra>"))
+
+    fig.update_layout(template="plotly_white", height=550, hovermode="x unified",
+                      xaxis_title="Fecha", yaxis_title="Rendimiento (%)",
+                      paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", font_color="#263b50",
+                      legend=dict(orientation="h", y=-0.21, x=0), margin=dict(t=25, b=105, l=55, r=25))
+    fig.update_xaxes(showgrid=True, gridcolor="#e9eff5")
+    fig.update_yaxes(showgrid=True, gridcolor="#e9eff5")
+    st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_hist_figure")
+    latest = focus.iloc[-1] if not focus.empty else np.nan
+    m1, m2, m3 = st.columns(3)
+    m1.metric(f"Última tasa · {indicator_series}", f"{latest:.4f}%" if np.isfinite(latest) else "n/d")
+    for col, period in [(m2, 14), (m3, 200)]:
+        val = moving[period].iloc[-1] if not moving[period].empty else np.nan
+        col.metric(f"MM{period} · {indicator_series}", f"{val:.4f}%" if np.isfinite(val) else "n/d")
+    with st.expander("Ver datos históricos y descargar CSV"):
+        exported = visible.copy()
+        for period in (14, 60, 200):
+            exported[f"MM{period} · {indicator_series}"] = moving[period].reindex(exported.index)
+        exported[f"Bollinger superior · {indicator_series}"] = upper.reindex(exported.index)
+        exported[f"Bollinger inferior · {indicator_series}"] = lower.reindex(exported.index)
+        st.dataframe(exported.sort_index(ascending=False), use_container_width=True)
+        st.download_button("Descargar histórico e indicadores", exported.to_csv(index_label="Fecha").encode("utf-8-sig"),
+                           file_name=f"neutrino_{key_prefix}_historico_tasas.csv", mime="text/csv", key=f"{key_prefix}_hist_csv")
+
 def read_market_file(path: str) -> pd.DataFrame:
     """Lee CSV o Excel probando los encodings usuales de vectores mexicanos."""
     p = Path(path)
@@ -886,6 +993,7 @@ with main_tabs[0]:
         "Curva",
         "Cupón cero vs CETES",
         "Carry",
+        "Histórico de tasas",
     ])
 
     with bonos_tabs[0]:
@@ -1162,6 +1270,9 @@ with main_tabs[0]:
             except Exception as exc:
                 st.error(f"No fue posible calcular carry: {exc}")
 
+    with bonos_tabs[6]:
+        render_yield_history(bonos, report_date, "bonos", "Bonos M")
+
 
 with main_tabs[1]:
     st.subheader("Módulo integral de Udibonos")
@@ -1181,6 +1292,7 @@ with main_tabs[1]:
                 "Breakeven",
                 "Detalle BE",
                 "Carry UDIS",
+                "Histórico de tasas",
             ]
         )
 
@@ -1516,6 +1628,9 @@ with main_tabs[1]:
                 except Exception as exc:
                     st.error(f"No fue posible calcular carry UDIS: {exc}")
 
+
+        with udi_tabs[6]:
+            render_yield_history(udis, report_date, "udis", "Udibonos")
 
 
 
