@@ -161,6 +161,64 @@ def curve_figure(curve: pd.DataFrame, days: int):
 
 
 
+
+def curve_change_figure(curve: pd.DataFrame, days: int):
+    """Visualización adicional: cambio de rendimiento (actual - previo) en pb."""
+    data = curve.copy()
+    data["ACTUAL"] = pd.to_numeric(data["ACTUAL"], errors="coerce")
+    data["HACE_30D"] = pd.to_numeric(data["HACE_30D"], errors="coerce")
+    data["TENOR"] = pd.to_numeric(data["TENOR"], errors="coerce")
+    data = data.dropna(subset=["TENOR", "ACTUAL", "HACE_30D"]).sort_values("TENOR")
+    if data.empty:
+        return None, data
+    # El motor proporciona rendimientos en porcentaje (p.ej. 7.33).
+    data["CAMBIO_PB"] = (data["ACTUAL"] - data["HACE_30D"]) * 100.0
+    colors = np.where(data["CAMBIO_PB"] > 0, "#e65359",
+                      np.where(data["CAMBIO_PB"] < 0, "#159c79", "#8999aa"))
+    fig = go.Figure(go.Bar(
+        x=data["TENOR"].map(lambda v: f"{v:.2f}"),
+        y=data["CAMBIO_PB"],
+        marker_color=colors,
+        text=data["CAMBIO_PB"].map(lambda v: f"{v:+.1f}"),
+        textposition="outside",
+        customdata=data[["SERIE", "ACTUAL", "HACE_30D"]].to_numpy(),
+        hovertemplate=("Emisión: %{customdata[0]}<br>Tenor: %{x} años<br>"
+                       "Actual: %{customdata[1]:.4f}%<br>"
+                       "Anterior: %{customdata[2]:.4f}%<br>"
+                       "Cambio: %{y:+.2f} pb<extra></extra>"),
+        cliponaxis=False,
+    ))
+    fig.add_hline(y=0, line_color="#8092a5", line_width=1)
+    fig.update_layout(
+        title=f"Variación de la curva vs hace {days} días",
+        xaxis_title="Tenor (años)", yaxis_title="Cambio (pb)",
+        paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", font_color="#263b50",
+        height=375, margin=dict(l=55, r=25, t=60, b=60), showlegend=False,
+        bargap=0.30, uniformtext_minsize=9,
+    )
+    fig.update_yaxes(zeroline=False, gridcolor="#e5ebf2")
+    return fig, data
+
+
+def show_curve_change_summary(curve: pd.DataFrame, days: int, key: str):
+    """Solo interfaz del Resumen, sin modificar el motor ni otras pestañas."""
+    fig, valid = curve_change_figure(curve, days)
+    if fig is None:
+        st.info("No hay cotizaciones comparables para calcular la variación de la curva.")
+        return
+    st.plotly_chart(fig, use_container_width=True, key=f"{key}_change_bars")
+    with st.expander("Ver detalle de cambios por emisión (pb)", expanded=False):
+        detail = valid[["SERIE", "TENOR", "ACTUAL", "HACE_30D", "CAMBIO_PB"]].rename(
+            columns={"SERIE": "Emisión", "TENOR": "Tenor (años)",
+                     "ACTUAL": "Actual (%)", "HACE_30D": f"Hace {days} días (%)",
+                     "CAMBIO_PB": "Cambio (pb)"})
+        st.dataframe(detail.style.format({"Tenor (años)": "{:.2f}",
+                                          "Actual (%)": "{:.4f}",
+                                          f"Hace {days} días (%)": "{:.4f}",
+                                          "Cambio (pb)": "{:+.2f}"}),
+                     use_container_width=True, hide_index=True)
+
+
 def read_market_file(path: str) -> pd.DataFrame:
     """Lee CSV o Excel probando los encodings usuales de vectores mexicanos."""
     p = Path(path)
@@ -837,6 +895,7 @@ with main_tabs[0]:
         c2.metric("5 años", f"{metrics.get('5Y', np.nan):,.2f}%" if np.isfinite(metrics.get('5Y', np.nan)) else "n/a")
         c3.metric("10 años", f"{metrics.get('10Y', np.nan):,.2f}%" if np.isfinite(metrics.get('10Y', np.nan)) else "n/a")
         st.plotly_chart(curve_figure(curve, curve_days), use_container_width=True, key="summary_curve")
+        show_curve_change_summary(curve, curve_days, "bonos_summary")
         show_dataframe(top_pairs[["PAR", "SPREAD", "Z", "ABS_Z"]] if not top_pairs.empty else top_pairs, use_container_width=True, hide_index=True)
 
 
@@ -1196,6 +1255,7 @@ with main_tabs[1]:
                         use_container_width=True,
                         key="udi_summary_curve",
                     )
+                    show_curve_change_summary(udi_curve, curve_days, "udi_summary")
 
                 if not udi_pairs.empty:
                     show_dataframe(
