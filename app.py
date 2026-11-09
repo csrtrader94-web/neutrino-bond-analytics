@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 
 import report_engine as eng
 from quant_modules import render_scanner, render_stability, render_pca
+from live_market import panel as live_market_panel, overlay as live_overlay
 
 st.set_page_config(page_title="Neutrino Fixed Income", page_icon="📈", layout="wide")
 
@@ -951,6 +952,18 @@ except Exception as exc:
     st.error(f"No se pudieron leer los datos: {exc}")
     st.stop()
 
+# Mantener bases puras para permitir reestimar el modelo sin usar la captura actual.
+bonos_hist, udis_hist = bonos, udis
+snap = st.session_state.get('live_snapshot')
+if snap:
+    try:
+        if snap.get('m'): bonos = live_overlay(bonos_hist, snap['date'], snap['m'])
+        if snap.get('u'): udis = live_overlay(udis_hist, snap['date'], snap['u'])
+    except Exception as exc:
+        st.error(f'Fotografía no aplicada: {exc}')
+        st.session_state.pop('live_snapshot',None)
+        bonos,udis = bonos_hist,udis_hist
+
 latest_update = max(path.stat().st_mtime for path in required_files.values())
 latest_update_text = datetime.fromtimestamp(latest_update).strftime("%d-%m-%Y %H:%M")
 st.caption(f"Última actualización de archivos: {latest_update_text}")
@@ -958,6 +971,8 @@ st.caption(f"Última actualización de archivos: {latest_update_text}")
 available_dates = pd.DatetimeIndex(bonos.pivot.index).sort_values()
 default_date = available_dates.max().date()
 report_date_input = st.sidebar.date_input("Fecha del reporte", value=default_date, min_value=available_dates.min().date(), max_value=default_date)
+if snap:
+    st.sidebar.info("Fotografía manual activa. El reporte utiliza las tasas capturadas; los precios del vector pueden ser de otra fecha.")
 report_date = eng.nearest_available_date(bonos.pivot, pd.Timestamp(report_date_input))
 
 try:
@@ -982,9 +997,12 @@ if not top_pairs.empty:
 else:
     m4.metric("Mayor |Z|", "n/a")
 
-main_tabs = st.tabs(["BONOS M", "UDIS", "CETES", "PCA CURVAS", "RV SCANNER", "ESTABILIDAD", "DESCARGA"])
+main_tabs = st.tabs(["ACTUALIZAR TASAS", "BONOS M", "UDIS", "CETES", "PCA CURVAS", "RV SCANNER", "ESTABILIDAD", "DESCARGA"])
 
 with main_tabs[0]:
+    live_market_panel(bonos_hist, udis_hist)
+
+with main_tabs[1]:
     st.subheader("Módulo Bonos M")
     bonos_tabs = st.tabs([
         "Resumen",
@@ -1274,7 +1292,7 @@ with main_tabs[0]:
         render_yield_history(bonos, report_date, "bonos", "Bonos M")
 
 
-with main_tabs[1]:
+with main_tabs[2]:
     st.subheader("Módulo integral de Udibonos")
     st.caption(
         "Matrices de tasas reales, pares, curva real, inflación breakeven y carry de Udibonos. "
@@ -1634,7 +1652,7 @@ with main_tabs[1]:
 
 
 
-with main_tabs[2]:
+with main_tabs[3]:
     st.subheader("Dashboard CETES")
     st.caption(
         "Versión web del dashboard original: TV=BI, rendimiento, tasa de un día, "
@@ -1825,16 +1843,16 @@ with main_tabs[2]:
                     st.error(f"No fue posible comparar CETES contra cero M: {exc}")
 
 
-with main_tabs[3]:
+with main_tabs[4]:
     render_pca(bonos, udis, report_date)
 
-with main_tabs[4]:
+with main_tabs[5]:
     render_scanner(bonos, udis, report_date)
 
-with main_tabs[5]:
+with main_tabs[6]:
     render_stability(bonos, udis, report_date)
 
-with main_tabs[6]:
+with main_tabs[7]:
     st.subheader("Informe institucional | NEUTRINO Fixed Income")
     st.caption("Resumen ejecutivo, curvas, matrices y RV, estabilidad, PCA y semáforo, breakeven por Udibono, carry, préstamos teóricos y CETES. Se respetan las fórmulas de los motores existentes.")
     from institutional_report import build_report
