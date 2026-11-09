@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 import report_engine as eng
 from quant_modules import render_scanner, render_stability, render_pca
 from live_market import panel as live_market_panel, overlay as live_overlay
+from summary_dashboard import render_summary
 
 st.set_page_config(page_title="Neutrino Fixed Income", page_icon="📈", layout="wide")
 
@@ -997,10 +998,10 @@ if not top_pairs.empty:
 else:
     m4.metric("Mayor |Z|", "n/a")
 
-main_tabs = st.tabs(["ACTUALIZAR TASAS", "BONOS M", "UDIS", "CETES", "PCA CURVAS", "RV SCANNER", "ESTABILIDAD", "DESCARGA"])
+main_tabs = st.tabs(["INICIO | SEÑALES", "BONOS M", "UDIS", "CETES", "PCA CURVAS", "RV SCANNER", "ESTABILIDAD", "DESCARGA", "ACTUALIZAR TASAS"])
 
 with main_tabs[0]:
-    live_market_panel(bonos_hist, udis_hist)
+    render_summary(bonos_hist, udis_hist, bonos, udis, report_date)
 
 with main_tabs[1]:
     st.subheader("Módulo Bonos M")
@@ -1882,3 +1883,6 @@ with main_tabs[7]:
 
 
 st.markdown('<p class="small-note">Versión MVP · Los cálculos provienen del motor original del reporte.</p>', unsafe_allow_html=True)
+
+with main_tabs[8]:
+    live_market_panel(bonos_hist, udis_hist)

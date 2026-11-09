@@ -287,6 +287,8 @@ def panel(bonos_hist,udis_hist):
                 st.dataframe(_semaphore_frame(lev,'Z nivel',threshold,['Emisión','Tasa actual (%)','Z nivel','Percentil histórico (%)','Obs.']).format({'Tasa actual (%)':'{:.4f}','Z nivel':'{:+.2f}','Percentil histórico (%)':'{:.1f}'}),hide_index=True,use_container_width=True)
                 st.caption('El Z de nivel es descriptivo: puede reflejar ciclos de política monetaria, no desalineaciones de valor relativo.')
         results.append((family,lev,rv,pca))
+    from recommendations import render_recommendations
+    render_recommendations(bonos_hist,udis_hist,snap,win,threshold)
     lines=[]
     for family,lev,rv,pca in results:
         for label,df,col in [('Niveles',lev,'Z nivel'),('RV',rv,f'Z{win}'),('PCA',pca,'Z PCA')]:
