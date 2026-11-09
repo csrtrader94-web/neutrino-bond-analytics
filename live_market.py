@@ -122,8 +122,96 @@ def _analyze(ds, day, quotes, win):
     pca,note=_pca_live(ds,day,quotes,win)
     return levels,rv,pca,note
 
+
+
+def _severity(z, threshold):
+    """Semáforo direccional: verde extremo positivo, rojo extremo negativo."""
+    if pd.isna(z) or not np.isfinite(z):
+        return 'SIN DATOS'
+    z = float(z)
+    if z >= threshold:
+        return 'EXTREMO POSITIVO'
+    if z <= -threshold:
+        return 'EXTREMO NEGATIVO'
+    return 'DENTRO DEL RANGO'
+
+
+def _color_alarm(value):
+    colors = {
+        'EXTREMO POSITIVO': 'background-color:#d8f3e4;color:#136542;font-weight:800',
+        'EXTREMO NEGATIVO': 'background-color:#fbd5da;color:#8b1025;font-weight:800',
+        'DENTRO DEL RANGO': 'background-color:#fff0bd;color:#80560c;font-weight:750',
+        'SIN DATOS': 'background-color:#e9edf2;color:#627389',
+    }
+    return colors.get(value, '')
+
+
+def _semaphore_frame(df, zcol, threshold, cols=None):
+    d=df.copy()
+    d.insert(0,'Semáforo',d[zcol].apply(lambda z:_severity(z,threshold)))
+    if cols:
+        d=d[['Semáforo']+cols]
+    return d.style.map(_color_alarm,subset=['Semáforo'])
+
+
+def _render_rv_history(ds, day, quotes, rv, win, threshold, key):
+    if rv.empty:
+        return
+    st.markdown('#### Gráfica RV — histórico vs cotización actual')
+    st.caption('El punto final es tu tasa capturada; la media y las bandas utilizan únicamente observaciones históricas anteriores.')
+    options=rv['Par'].astype(str).tolist()
+    selected=st.selectbox('Seleccionar spread para graficar',options,key=f'{key}_plot_select')
+    item=rv.loc[rv['Par']==selected].iloc[0]
+    long,short=str(item['Largo']),str(item['Corto'])
+    hist=(ds.pivot[long]-ds.pivot[short]).dropna().tail(win)
+    if len(hist)<2:
+        st.info('No hay historial suficiente para graficar este par.');return
+    hist_pb=hist*100
+    current=(quotes[long]-quotes[short])*100
+    mu=float(hist_pb.mean());sd=float(hist_pb.std(ddof=1))
+    fig=go.Figure()
+    if np.isfinite(sd) and sd>0:
+        fig.add_hrect(y0=mu-2*sd,y1=mu+2*sd,fillcolor='#edb554',opacity=.13,line_width=0)
+        fig.add_hrect(y0=mu-sd,y1=mu+sd,fillcolor='#13866f',opacity=.11,line_width=0)
+    fig.add_trace(go.Scatter(x=hist_pb.index,y=hist_pb.values,mode='lines',name='Spread histórico',line=dict(color='#266aa0',width=2)))
+    fig.add_trace(go.Scatter(x=[hist_pb.index[-1],pd.Timestamp(day)],y=[float(hist_pb.iloc[-1]),current],mode='lines',name='Conexión al snapshot',line=dict(color='#8e9daf',dash='dot')))
+    severity=_severity(float(item[f'Z{win}']),threshold)
+    flag={'EXTREMO POSITIVO':'#15966f','EXTREMO NEGATIVO':'#d33a4c','DENTRO DEL RANGO':'#e5a129'}.get(severity,'#8a98a5')
+    fig.add_trace(go.Scatter(x=[pd.Timestamp(day)],y=[current],mode='markers+text',name='Tasa actual capturada',text=[f'{current:+.2f} pb | Z {item[f"Z{win}"]:+.2f}'],textposition='top left',marker=dict(color=flag,size=15,symbol='diamond',line=dict(width=1,color='#ffffff'))))
+    fig.add_hline(y=mu,line_dash='dash',line_color='#a87322',annotation_text=f'Media {mu:+.2f} pb')
+    fig.update_layout(template='plotly_white',height=460,hovermode='x unified',xaxis_title='Fecha',yaxis_title='Spread largo − corto (pb)',legend=dict(orientation='h',y=-.25),margin=dict(t=30,b=100))
+    st.plotly_chart(fig,use_container_width=True,key=f'{key}_rv_chart')
+    x1,x2,x3=st.columns(3)
+    x1.metric('Spread actual',f'{current:+.2f} pb')
+    x2.metric('Media histórica',f'{mu:+.2f} pb')
+    x3.metric('Z-score',f'{item[f"Z{win}"]:+.2f} σ')
+    tfig=go.Figure()
+    tfig.add_trace(go.Scatter(x=hist_pb.index,y=ds.pivot.loc[hist_pb.index,long],name=f'{long}',line=dict(color='#0b918e')))
+    tfig.add_trace(go.Scatter(x=hist_pb.index,y=ds.pivot.loc[hist_pb.index,short],name=f'{short}',line=dict(color='#4968ab')))
+    for sym,color in [(long,'#0b918e'),(short,'#4968ab')]:
+        tfig.add_trace(go.Scatter(x=[pd.Timestamp(day)],y=[quotes[sym]],mode='markers',marker=dict(color=color,size=12,symbol='diamond'),name=f'{sym} actual'))
+    tfig.update_layout(title='Rendimientos de ambas emisiones',template='plotly_white',height=330,hovermode='x unified',yaxis_title='Rendimiento (%)')
+    st.plotly_chart(tfig,use_container_width=True,key=f'{key}_rv_legs')
+
+
+def _render_pca_semaphore(pca, threshold, key):
+    if pca.empty:
+        return
+    d=pca.copy()
+    d['Semáforo']=d['Z PCA'].apply(lambda z:_severity(z,threshold))
+    d=d.sort_values('|Z PCA|',ascending=False)
+    fig=go.Figure(go.Bar(x=d['Emisión'].astype(str),y=d['Z PCA'],
+        marker_color=[{'EXTREMO POSITIVO':'#15966f','EXTREMO NEGATIVO':'#d33a4c','DENTRO DEL RANGO':'#e5a129','SIN DATOS':'#9aa5b1'}[v] for v in d['Semáforo']],
+        text=d['Z PCA'].map(lambda x: f'{x:+.2f}' if pd.notna(x) else ''),textposition='outside'))
+    fig.add_hline(y=threshold,line_dash='dot',line_color='#15966f')
+    fig.add_hline(y=-threshold,line_dash='dot',line_color='#d33a4c')
+    fig.update_layout(title='Semáforo PCA | residuales normalizados por emisión',template='plotly_white',height=420,xaxis_title='Emisión',yaxis_title='Z PCA (σ)',margin=dict(t=55,b=70))
+    st.plotly_chart(fig,use_container_width=True,key=f'{key}_pca_semaforo')
+
+
 def panel(bonos_hist,udis_hist):
     st.header('Actualizar tasas | Market Snapshot')
+    st.caption('Módulo ubicado en la última pestaña de NEUTRINO. Semáforos direccionales: 🟢 Z ≥ +umbral (extremo positivo) · 🔴 Z ≤ −umbral (extremo negativo) · 🟡 entre ambos umbrales (dentro del rango). Aplica a RV, PCA y niveles.')
     st.caption('Captura rendimientos de mercado en porcentaje: 8.7500 significa 8.75%. Los históricos originales permanecen intactos. Los cálculos se recalculan con las cotizaciones capturadas.')
     last=max(pd.Timestamp(bonos_hist.last_date),pd.Timestamp(udis_hist.last_date))
     minimum=(last+pd.Timedelta(days=1)).date()
@@ -183,18 +271,20 @@ def panel(bonos_hist,udis_hist):
         with t1:
             if rv.empty:st.info('Faltan cotizaciones o historia coincidente para evaluar pares.')
             else:
-                st.dataframe(rv[['Par','Spread actual (pb)',f'Z{win}','Hist. conjunto','Percentil (%)']].head(40),hide_index=True,use_container_width=True)
+                st.dataframe(_semaphore_frame(rv,f'Z{win}',threshold,['Par','Spread actual (pb)',f'Z{win}','Hist. conjunto','Percentil (%)']).format({'Spread actual (pb)':'{:+.2f}',f'Z{win}':'{:+.2f}','Percentil (%)':'{:.1f}'}),hide_index=True,use_container_width=True,height=440)
+                _render_rv_history(ds,pd.Timestamp(snap['date']),quotes,rv,win,threshold, 'live_'+('m' if family=='Bonos M' else 'u'))
                 st.caption('Spread = rendimiento de plazo largo menos plazo corto. Z positivo: spread más amplio; no implica por sí solo una compra.')
         with t2:
             st.caption(note)
             if pca.empty:st.info('No se dispone de una muestra suficiente para PCA.')
             else:
-                st.dataframe(pca.drop(columns='|Z PCA|'),hide_index=True,use_container_width=True)
+                _render_pca_semaphore(pca,threshold,'live_'+('m' if family=='Bonos M' else 'u'))
+                st.dataframe(_semaphore_frame(pca,'Z PCA',threshold,['Emisión','Tasa actual (%)','Cambio actual (pb)','Cambio explicado PCA (pb)','Residual PCA (pb)','Z PCA']).format({'Tasa actual (%)':'{:.4f}','Cambio actual (pb)':'{:+.2f}','Cambio explicado PCA (pb)':'{:+.2f}','Residual PCA (pb)':'{:+.2f}','Z PCA':'{:+.2f}'}),hide_index=True,use_container_width=True)
                 st.caption('PCA estimado con cambios históricos anteriores y proyectado al movimiento actual. Residual positivo: la tasa subió más de lo explicado por los factores; no equivale directamente a precio barato.')
         with t3:
             if lev.empty:st.info('Histórico insuficiente')
             else:
-                st.dataframe(lev.drop(columns='|Z nivel|'),hide_index=True,use_container_width=True)
+                st.dataframe(_semaphore_frame(lev,'Z nivel',threshold,['Emisión','Tasa actual (%)','Z nivel','Percentil histórico (%)','Obs.']).format({'Tasa actual (%)':'{:.4f}','Z nivel':'{:+.2f}','Percentil histórico (%)':'{:.1f}'}),hide_index=True,use_container_width=True)
                 st.caption('El Z de nivel es descriptivo: puede reflejar ciclos de política monetaria, no desalineaciones de valor relativo.')
         results.append((family,lev,rv,pca))
     lines=[]
@@ -209,7 +299,8 @@ def panel(bonos_hist,udis_hist):
     if out.empty:st.info('Sin alarmas extremas para este umbral.')
     else:
         out=out.assign(ABS_Z=out['Z'].abs()).sort_values('ABS_Z',ascending=False).drop(columns='ABS_Z')
-        st.dataframe(out,hide_index=True,use_container_width=True)
+        out.insert(0,'Semáforo',out['Z'].apply(lambda z:_severity(z,threshold)))
+        st.dataframe(out.style.map(_color_alarm,subset=['Semáforo']).format({'Z':'{:+.2f}'}),hide_index=True,use_container_width=True)
         st.download_button('Descargar alarmas CSV',out.to_csv(index=False).encode('utf-8-sig'),file_name=f"NEUTRINO_ALERTAS_{snap['date']}.csv",mime='text/csv')
     rows=[{'Mercado':family,'Emisión':s,'Tasa actual (%)':v,'Fecha':snap['date']} for family,key in [('Bonos M','m'),('Udibonos','u')] for s,v in snap[key].items()]
     st.download_button('Exportar fotografía de tasas CSV',pd.DataFrame(rows).to_csv(index=False).encode('utf-8-sig'),file_name=f"NEUTRINO_TASAS_{snap['date']}.csv",mime='text/csv')
